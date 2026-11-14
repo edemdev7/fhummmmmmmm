@@ -9,16 +9,42 @@ const FORMATS = {
   story: { label: 'Story 9:16', w: 1080, h: 1920 },
 };
 
+// Titres par défaut des slides (en anglais, comme les carrousels d'origine). Modifiables dans l'éditeur.
+const EN_TITLES = {
+  repas: 'Favorite food',
+  couleur: 'Favorite color',
+  crush: 'Celebrity crush',
+  serie: 'Favorite series',
+  boisson: 'Favorite drink',
+  voiture: 'Favorite car',
+  hobby: 'Hobby',
+  artiste_homme: 'Favorite male artist',
+  artiste_femme: 'Favorite female artist',
+};
+
 // Réglages gardés tant que la page est ouverte (survivent aux actualisations du récap).
 const state = {
   selected: null, // ids des amis, dans l'ordre d'affichage
   cats: new Set(CATS.map((c) => c.key)),
-  titles: Object.fromEntries(CATS.map((c) => [c.key, c.label])),
+  titles: Object.fromEntries(CATS.map((c) => [c.key, EN_TITLES[c.key] || c.label])),
   format: 'portrait',
   captions: false,
   colorFill: true,
   current: 0,
+  edit: null, // URL de l'image en cours de recadrage
 };
+
+// Recadrages par image : { fx, fy } = position (0 à 1), zoom ≥ 1, rot en quarts de tour. Gardés dans le navigateur.
+const CROP_KEY = 'fhummmmmmmm.crops';
+let crops = {};
+try { crops = JSON.parse(localStorage.getItem(CROP_KEY)) || {}; } catch { /* ignoré */ }
+let cropSaveTimer = null;
+function saveCrops() {
+  clearTimeout(cropSaveTimer);
+  cropSaveTimer = setTimeout(() => { try { localStorage.setItem(CROP_KEY, JSON.stringify(crops)); } catch { /* ignoré */ } }, 400);
+}
+const cropOf = (url, defFy = 0.5) => crops[url] || { fx: 0.5, fy: defFy, zoom: 1, rot: 0 };
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
 
 let ctx = null; // { root, people, imageBlob, saveFile, withBusy, onBack }
 let slides = []; // [{ key, title, canvas }]
@@ -64,12 +90,33 @@ function bitmap(ref) {
   return bitmaps.get(url);
 }
 
-function drawCover(g, img, x, y, w, h, focusY = 0.5) {
-  const s = Math.max(w / img.width, h / img.height);
-  const sw = w / s, sh = h / s;
-  const sx = (img.width - sw) / 2;
-  const sy = (img.height - sh) * focusY;
-  g.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+const rotatedCache = new Map(); // `${url}|${rot}` -> canvas
+function rotated(url, img, rot) {
+  const r = ((rot % 4) + 4) % 4;
+  if (!r) return img;
+  const k = `${url}|${r}`;
+  if (!rotatedCache.has(k)) {
+    const c = document.createElement('canvas');
+    c.width = r % 2 ? img.height : img.width;
+    c.height = r % 2 ? img.width : img.height;
+    const g = c.getContext('2d');
+    g.translate(c.width / 2, c.height / 2);
+    g.rotate((r * Math.PI) / 2);
+    g.drawImage(img, -img.width / 2, -img.height / 2);
+    rotatedCache.set(k, c);
+  }
+  return rotatedCache.get(k);
+}
+
+/** Échelle et marge de déplacement d'une image dans une case, selon son recadrage. */
+function fit(img, w, h, crop) {
+  const s = Math.max(w / img.width, h / img.height) * crop.zoom;
+  return { s, sw: w / s, sh: h / s };
+}
+
+function drawCover(g, img, x, y, w, h, crop) {
+  const { sw, sh } = fit(img, w, h, crop);
+  g.drawImage(img, (img.width - sw) * crop.fx, (img.height - sh) * crop.fy, sw, sh, x, y, w, h);
 }
 
 function wrap(g, text, maxW) {
@@ -123,25 +170,33 @@ function title(g, text, W, H) {
   g.save();
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  let fs = 84, lines;
-  do { g.font = `700 ${fs}px "DM Sans", sans-serif`; lines = wrap(g, text, W * 0.62); fs -= 4; }
-  while ((lines.length > 2 || lines.some((l) => g.measureText(l).width > W * 0.86)) && fs > 40);
-  fs += 4;
-  const lh = fs * 1.08;
+  // Taille proche des carrousels d'exemple : environ 1/3 de la largeur, retour à la ligne au-delà.
+  let fs = Math.round(W * 0.046), lines;
+  do { g.font = `700 ${fs}px "DM Sans", sans-serif`; lines = wrap(g, text, W * 0.4); fs -= 2; }
+  while ((lines.length > 2 || lines.some((l) => g.measureText(l).width > W * 0.7)) && fs > 30);
+  fs += 2;
+  const lh = fs * 1.1;
   g.fillStyle = '#fff';
-  g.shadowColor = 'rgba(0,0,0,.85)';
-  for (const [blur, oy] of [[22, 3], [6, 2]]) {
+  g.shadowColor = 'rgba(0,0,0,.8)';
+  for (const [blur, oy] of [[14, 2], [4, 1]]) {
     g.shadowBlur = blur; g.shadowOffsetY = oy;
     lines.forEach((l, i) => g.fillText(l, W / 2, H / 2 + (i - (lines.length - 1) / 2) * lh));
   }
   g.restore();
 }
 
-async function drawSlide(cat, list) {
+async function drawSlide(cat, list, canvas = document.createElement('canvas')) {
   const { w: W, h: H } = FORMATS[state.format];
-  const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
+  canvas.cells = []; // cases recadrables, pour l'aperçu
   const g = canvas.getContext('2d');
+  const place = (ref, raw, x, y, w, h, defFy, label) => {
+    const url = imgUrl(ref);
+    const crop = cropOf(url, defFy);
+    const img = rotated(url, raw, crop.rot);
+    drawCover(g, img, x, y, w, h, crop);
+    canvas.cells.push({ url, defFy, img, x, y, w, h, label });
+  };
   g.fillStyle = '#0b0d12';
   g.fillRect(0, 0, W, H);
 
@@ -158,7 +213,7 @@ async function drawSlide(cat, list) {
 
     g.fillStyle = '#1a1722';
     g.fillRect(0, y, colW, rowH);
-    if (face) drawCover(g, face, 0, y, colW, rowH, 0.3);
+    if (face) place(p.photo, face, 0, y, colW, rowH, 0.3, `Photo de ${p.prenom || 'cet ami'} (toutes les slides)`);
     else fillText(g, p.prenom || '?', 0, y, colW, rowH, 44);
 
     const x = colW + gap;
@@ -166,7 +221,7 @@ async function drawSlide(cat, list) {
     g.fillStyle = '#1a1722';
     g.fillRect(x, y, colW, rowH);
     if (color) { g.fillStyle = color; g.fillRect(x, y, colW, rowH); }
-    else if (answer) drawCover(g, answer, x, y, colW, rowH, 0.5);
+    else if (answer) place(refOf(p, cat.key), answer, x, y, colW, rowH, 0.5, `${cat.label} de ${p.prenom || 'cet ami'}`);
     else if (cat.key === 'couleur' && colorOf(nom)) { g.fillStyle = colorOf(nom); g.fillRect(x, y, colW, rowH); }
     else fillText(g, nom || '—', x, y, colW, rowH, 44);
 
@@ -218,35 +273,155 @@ async function renderSlides() {
   for (const c of cats) {
     const canvas = await drawSlide(c, list);
     if (token !== renderToken) return; // un réglage a changé entre-temps
-    out.push({ key: c.key, title: state.titles[c.key] || c.label, canvas });
+    out.push({ key: c.key, cat: c, title: state.titles[c.key] || c.label, canvas });
   }
   slides = out;
   state.current = Math.min(state.current, slides.length - 1);
   showStage();
 }
 
+function paintThumb(sl) {
+  if (!sl.thumb) return;
+  const t = sl.thumb;
+  t.width = 108; t.height = Math.round(108 * sl.canvas.height / sl.canvas.width);
+  t.getContext('2d').drawImage(sl.canvas, 0, 0, t.width, t.height);
+}
+
+/* ---------- recadrage dans l'aperçu ---------- */
+const editCell = () => slides[state.current]?.canvas.cells.find((c) => c.url === state.edit) || null;
+
+function placeOverlay() {
+  const box = document.getElementById('cr-sel');
+  const s = slides[state.current];
+  const c = editCell();
+  if (!box || !s) return;
+  box.hidden = !c;
+  if (!c) return;
+  const W = s.canvas.width, H = s.canvas.height;
+  Object.assign(box.style, { left: `${(c.x / W) * 100}%`, top: `${(c.y / H) * 100}%`, width: `${(c.w / W) * 100}%`, height: `${(c.h / H) * 100}%` });
+}
+
+// Redessine tout de suite la slide affichée, puis les autres un peu après (la photo d'un ami est sur toutes).
+let redrawBusy = false, redrawAgain = false, redrawAllTimer = null;
+async function redrawCurrent() {
+  if (redrawBusy) { redrawAgain = true; return; }
+  redrawBusy = true;
+  const s = slides[state.current];
+  if (s) { await drawSlide(s.cat, chosen(), s.canvas); paintThumb(s); placeOverlay(); }
+  redrawBusy = false;
+  if (redrawAgain) { redrawAgain = false; requestAnimationFrame(redrawCurrent); }
+  clearTimeout(redrawAllTimer);
+  redrawAllTimer = setTimeout(async () => {
+    for (const sl of slides) if (sl !== slides[state.current]) { await drawSlide(sl.cat, chosen(), sl.canvas); paintThumb(sl); }
+  }, 350);
+}
+
+function updateCrop(change) {
+  const c = editCell();
+  if (!c) return;
+  const cur = cropOf(c.url, c.defFy);
+  crops[c.url] = { ...cur, ...change(cur, c) };
+  saveCrops();
+  redrawCurrent();
+  syncToolbar();
+}
+
+function syncToolbar() {
+  const z = document.getElementById('cr-zoom');
+  const c = editCell();
+  if (z && c) z.value = cropOf(c.url, c.defFy).zoom;
+}
+
+function selectCell(url) {
+  state.edit = url;
+  showStage();
+}
+
+function toCanvas(canvas, e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: ((e.clientX - r.left) / r.width) * canvas.width, y: ((e.clientY - r.top) / r.height) * canvas.height };
+}
+
+function bindCanvas(canvas) {
+  if (canvas.bound) return;
+  canvas.bound = true;
+  let drag = null;
+  canvas.addEventListener('pointerdown', (e) => {
+    const pt = toCanvas(canvas, e);
+    const hit = canvas.cells.find((c) => pt.x >= c.x && pt.x < c.x + c.w && pt.y >= c.y && pt.y < c.y + c.h);
+    if (!hit) { if (state.edit) selectCell(null); return; }
+    if (hit.url !== state.edit) selectCell(hit.url);
+    drag = { ...pt, id: e.pointerId };
+    canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const pt = toCanvas(canvas, e);
+    const dx = pt.x - drag.x, dy = pt.y - drag.y;
+    drag.x = pt.x; drag.y = pt.y;
+    updateCrop((cur, c) => {
+      const { s, sw, sh } = fit(c.img, c.w, c.h, cur);
+      const rx = c.img.width - sw, ry = c.img.height - sh;
+      return {
+        fx: rx > 0.5 ? clamp01(cur.fx - dx / s / rx) : cur.fx,
+        fy: ry > 0.5 ? clamp01(cur.fy - dy / s / ry) : cur.fy,
+      };
+    });
+  });
+  const end = (e) => { if (drag && e.pointerId === drag.id) drag = null; };
+  canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointercancel', end);
+  canvas.addEventListener('wheel', (e) => {
+    if (!editCell()) return;
+    e.preventDefault();
+    updateCrop((cur) => ({ zoom: Math.max(1, Math.min(4, cur.zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08))) }));
+  }, { passive: false });
+}
+
+function toolbar() {
+  const c = editCell();
+  if (!c) return el('p', { class: 'cr-hint cr-tip', text: 'Astuce : clique sur une image de l’aperçu pour la recadrer.' });
+  const crop = cropOf(c.url, c.defFy);
+  return el('div', { class: 'cr-tools' },
+    el('p', { class: 'cr-tools-title' }, el('strong', { text: 'Recadrer : ' }), c.label),
+    el('p', { class: 'cr-hint', text: 'Fais glisser l’image pour la déplacer. Zoome avec le curseur ou la molette.' }),
+    el('div', { class: 'row' },
+      el('label', { for: 'cr-zoom', class: 'cr-hint', text: 'Zoom' }),
+      el('input', { type: 'range', id: 'cr-zoom', min: 1, max: 4, step: 0.01, value: crop.zoom,
+        oninput: (e) => { const z = Number(e.target.value); updateCrop(() => ({ zoom: z })); } })),
+    el('div', { class: 'row' },
+      el('button', { type: 'button', class: 'btn sm', onclick: () => updateCrop((cur) => ({ rot: (cur.rot + 3) % 4 })) }, '↺ Pivoter'),
+      el('button', { type: 'button', class: 'btn sm', onclick: () => updateCrop((cur) => ({ rot: (cur.rot + 1) % 4 })) }, '↻ Pivoter'),
+      el('button', { type: 'button', class: 'btn sm', onclick: () => { delete crops[c.url]; saveCrops(); redrawCurrent(); syncToolbar(); } }, 'Réinitialiser'),
+      el('button', { type: 'button', class: 'btn sm primary', onclick: () => selectCell(null) }, 'Terminé')));
+}
+
 function showStage() {
   const stage = document.getElementById('cr-stage');
   if (!stage || !slides.length) return;
   const s = slides[state.current];
-  s.canvas.className = 'cr-canvas';
+  s.canvas.className = 'cr-canvas' + (state.edit ? ' editing' : '');
   s.canvas.setAttribute('role', 'img');
   s.canvas.setAttribute('aria-label', `Slide ${state.current + 1} : ${s.title}`);
+  bindCanvas(s.canvas);
   const go = (d) => { state.current = (state.current + d + slides.length) % slides.length; showStage(); };
   const thumbs = slides.map((sl, i) => {
-    const t = document.createElement('canvas');
-    t.width = 108; t.height = Math.round(108 * sl.canvas.height / sl.canvas.width);
-    t.getContext('2d').drawImage(sl.canvas, 0, 0, t.width, t.height);
+    sl.thumb = document.createElement('canvas');
+    paintThumb(sl);
     return el('button', { type: 'button', class: 'cr-thumb', 'aria-current': i === state.current ? 'true' : null, title: sl.title,
-      onclick: () => { state.current = i; showStage(); } }, t);
+      onclick: () => { state.current = i; showStage(); } }, sl.thumb);
   });
   stage.replaceChildren(
     el('div', { class: 'cr-frame' },
       s.canvas,
+      el('div', { class: 'cr-sel', id: 'cr-sel', hidden: true }),
       slides.length > 1 ? el('button', { type: 'button', class: 'cr-arrow prev', 'aria-label': 'Slide précédente', onclick: () => go(-1) }, '‹') : null,
       slides.length > 1 ? el('button', { type: 'button', class: 'cr-arrow next', 'aria-label': 'Slide suivante', onclick: () => go(1) }, '›') : null),
     el('p', { class: 'cr-count', text: `${state.current + 1} / ${slides.length} · ${s.title}` }),
+    toolbar(),
     el('div', { class: 'cr-thumbs' }, thumbs));
+  placeOverlay();
   updateButtons();
 }
 

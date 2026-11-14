@@ -172,3 +172,13 @@ select.text{appearance:auto}
   .cr-layout{grid-template-columns:1fr}
   .cr-stage{position:static;order:-1}
 }
+.cr-canvas{cursor:pointer;touch-action:pan-y}
+.cr-canvas.editing{cursor:grab;touch-action:none}
+.cr-canvas.editing:active{cursor:grabbing}
+.cr-sel{position:absolute;pointer-events:none;outline:3px solid var(--accent);outline-offset:-3px;box-shadow:0 0 0 9999px rgba(0,0,0,.35);border-radius:2px}
+.cr-sel[hidden]{display:none}
+.cr-frame{overflow:hidden;border-radius:10px}
+.cr-tools{width:100%;max-width:460px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.cr-tools-title{margin:0}
+.cr-tools input[type=range]{flex:1;accent-color:var(--accent)}
+.cr-tip{text-align:center}

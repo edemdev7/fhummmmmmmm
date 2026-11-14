@@ -1,11 +1,13 @@
 // Récap admin : protégé par le mot de passe ADMIN_PASSWORD défini sur Vercel.
 import { CATS, STEPS, TOTAL, EXT, el, toast, copyText, slug, fmtDate, imgUrl, refOf, nameOf, filled } from './shared.js';
+import { renderCarousel } from './carousel.js';
 
 const PW_KEY = 'fhummmmmmmm.admin';
 let password = null;
 let people = [];
 let lastPayload = '';
 let note = '';
+let view = 'recap'; // 'recap' ou 'carousel'
 
 try { password = sessionStorage.getItem(PW_KEY); } catch { /* ignoré */ }
 
@@ -43,7 +45,7 @@ function renderLogin(error) {
 }
 
 function logout() {
-  password = null; people = []; lastPayload = '';
+  password = null; people = []; lastPayload = ''; view = 'recap';
   try { sessionStorage.removeItem(PW_KEY); } catch { /* ignoré */ }
   renderLogin();
 }
@@ -57,7 +59,8 @@ async function load() {
     note = '';
     lastPayload = payload;
     people = data.people;
-    if (changed) render(); // évite de tout redessiner quand rien n'a bougé
+    // évite de tout redessiner quand rien n'a bougé ; l'éditeur de carrousel n'est jamais redessiné en arrière-plan
+    if (changed && (view === 'recap' || document.getElementById('admin-pw'))) render();
     return true;
   } catch (e) {
     if (e.status === 401 || e.status === 429) { password = null; try { sessionStorage.removeItem(PW_KEY); } catch { /* ignoré */ } renderLogin(e.message); return false; }
@@ -179,6 +182,10 @@ function thumb(ref, alt, cls) {
 }
 
 function render() {
+  if (view === 'carousel') {
+    renderCarousel({ root: root(), people, imageBlob, saveFile, withBusy, onBack: () => { view = 'recap'; render(); } });
+    return;
+  }
   const complete = people.filter((p) => p.done).length;
   const summary = people.length === 0 ? 'Personne n’a encore répondu.'
     : `${people.length} ${people.length > 1 ? 'amis ont commencé' : 'ami a commencé'}, ${complete} complet${complete > 1 ? 's' : ''}.`;
@@ -191,6 +198,7 @@ function render() {
         el('button', { type: 'button', class: 'btn sm', disabled: !has || null, onclick: () => copyText(people.map(personText).join('\n\n')) }, 'Copier tous les textes'),
         el('button', { type: 'button', class: 'btn sm', disabled: !has || null, onclick: () => saveFile('fhummmmmmmm.csv', new Blob([csv()], { type: 'text/csv;charset=utf-8' })) }, 'Exporter en CSV'),
         el('button', { type: 'button', class: 'btn sm primary', disabled: !has || null, onclick: (e) => zipAll(e.currentTarget) }, 'Tout télécharger (ZIP)'),
+        el('button', { type: 'button', class: 'btn sm primary', disabled: !has || null, onclick: () => { view = 'carousel'; render(); } }, 'Créer le carrousel'),
         el('button', { type: 'button', class: 'link-btn', onclick: logout }, 'Se déconnecter'))),
     note ? el('div', { class: 'notice', text: note }) : null,
     has ? people.map(personCard) : el('div', { class: 'empty-state' },

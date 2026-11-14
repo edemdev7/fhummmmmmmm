@@ -182,3 +182,4 @@ select.text{appearance:auto}
 .cr-tools-title{margin:0}
 .cr-tools input[type=range]{flex:1;accent-color:var(--accent)}
 .cr-tip{text-align:center}
+.cr-opt span:last-child{white-space:normal;overflow:visible}

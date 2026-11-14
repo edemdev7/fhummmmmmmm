@@ -28,7 +28,8 @@ const state = {
   cats: new Set(CATS.map((c) => c.key)),
   titles: Object.fromEntries(CATS.map((c) => [c.key, EN_TITLES[c.key] || c.label])),
   format: 'portrait',
-  captions: false,
+  showNames: false, // prénom sur la photo de chaque ami
+  showAnswers: false, // réponse sur l'image de droite
   colorFill: true,
   current: 0,
   edit: null, // URL de l'image en cours de recadrage
@@ -225,10 +226,8 @@ async function drawSlide(cat, list, canvas = document.createElement('canvas')) {
     else if (cat.key === 'couleur' && colorOf(nom)) { g.fillStyle = colorOf(nom); g.fillRect(x, y, colW, rowH); }
     else fillText(g, nom || '—', x, y, colW, rowH, 44);
 
-    if (state.captions) {
-      caption(g, p.prenom, 0, y, colW, rowH);
-      if (answer || color) caption(g, nom, x, y, colW, rowH);
-    }
+    if (state.showNames && face) caption(g, p.prenom, 0, y, colW, rowH);
+    if (state.showAnswers && (answer || color)) caption(g, nom, x, y, colW, rowH);
   });
 
   title(g, state.titles[cat.key] || '', W, H);
@@ -495,13 +494,14 @@ function slidesPanel() {
 function optionsPanel() {
   const select = el('select', { class: 'text', id: 'cr-format', onchange: (e) => { state.format = e.target.value; scheduleRender(); } },
     Object.entries(FORMATS).map(([k, f]) => el('option', { value: k, selected: k === state.format || null }, f.label)));
-  const toggle = (key, label) => el('label', { class: 'cr-check' },
+  const toggle = (key, label) => el('label', { class: 'cr-check cr-opt' },
     el('input', { type: 'checkbox', checked: state[key] || null, onchange: (e) => { state[key] = e.target.checked; scheduleRender(); } }),
     el('span', { text: label }));
   return el('section', { class: 'cr-panel' },
     el('h2', { text: 'Options' }),
     el('div', { class: 'field' }, el('label', { for: 'cr-format', text: 'Format' }), select),
-    toggle('captions', 'Afficher les prénoms et les réponses'),
+    toggle('showNames', 'Afficher les prénoms'),
+    toggle('showAnswers', 'Afficher les réponses'),
     toggle('colorFill', 'Couleur préférée : aplat de couleur plutôt que l’image'));
 }
 

@@ -1,11 +1,9 @@
 // Page des amis : questionnaire en 10 étapes, enregistré étape par étape.
-import { CATS, STEPS, TOTAL, el, toast, copyText, imgUrl, refOf, nameOf } from './shared.js';
+import { CATS, STEPS, TOTAL, el, toast, copyText, imgUrl, refOf, nameOf, prepareImage } from './shared.js';
 
 const LS_KEY = 'fhummmmmmmm.carnet';
 const ID_RE = /^[A-Za-z0-9_-]{16}$/;
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
-const OK_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-const MAX_SEND = 3.5 * 1024 * 1024;
 
 let creds = null; // { id, token } : identifie ce carnet sans compte
 let me = blank();
@@ -63,34 +61,6 @@ async function saveMe() {
 }
 
 /* ---------- images ---------- */
-async function decode(file) {
-  if (window.createImageBitmap) { try { return await createImageBitmap(file); } catch { /* repli */ } }
-  return new Promise((resolve, reject) => {
-    const u = URL.createObjectURL(file);
-    const im = new Image();
-    im.onload = () => resolve(im);
-    im.onerror = () => reject(new Error('decode'));
-    im.src = u;
-  });
-}
-async function toJpeg(file, maxSide, quality) {
-  const src = await decode(file);
-  const s = Math.min(1, maxSide / Math.max(src.width, src.height));
-  const c = document.createElement('canvas');
-  c.width = Math.round(src.width * s);
-  c.height = Math.round(src.height * s);
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, c.width, c.height);
-  ctx.drawImage(src, 0, 0, c.width, c.height);
-  return new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error('encode'))), 'image/jpeg', quality));
-}
-async function prepare(file) {
-  if (OK_TYPES.includes(file.type) && file.size <= MAX_SEND) return file;
-  let b = await toJpeg(file, 1600, 0.85);
-  if (b.size > MAX_SEND) b = await toJpeg(file, 1200, 0.75);
-  return b;
-}
 async function onFile(file, step) {
   if (!file) return;
   formError = '';
@@ -98,7 +68,7 @@ async function onFile(file, step) {
   uploading = true; render();
   try {
     await ensureCreds();
-    const blob = await prepare(file);
+    const blob = await prepareImage(file);
     const r = await api(`/api/upload?key=${encodeURIComponent(step.key)}`, { method: 'POST', headers: { 'content-type': blob.type || 'application/octet-stream' }, body: blob });
     const ref = { url: r.url };
     if (step.key === 'moi') me.photo = ref;

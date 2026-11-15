@@ -1,13 +1,15 @@
 // Récap admin : protégé par le mot de passe ADMIN_PASSWORD défini sur Vercel.
 import { CATS, STEPS, TOTAL, EXT, el, toast, copyText, slug, fmtDate, imgUrl, refOf, nameOf, filled } from './shared.js';
 import { renderCarousel } from './carousel.js';
+import { renderEditor } from './editor.js';
 
 const PW_KEY = 'fhummmmmmmm.admin';
 let password = null;
 let people = [];
 let lastPayload = '';
 let note = '';
-let view = 'recap'; // 'recap' ou 'carousel'
+let view = 'recap'; // 'recap', 'carousel' ou 'edit'
+let editing = null; // carnet ouvert dans l'éditeur (vue 'edit')
 
 try { password = sessionStorage.getItem(PW_KEY); } catch { /* ignoré */ }
 
@@ -45,7 +47,7 @@ function renderLogin(error) {
 }
 
 function logout() {
-  password = null; people = []; lastPayload = ''; view = 'recap';
+  password = null; people = []; lastPayload = ''; view = 'recap'; editing = null;
   try { sessionStorage.removeItem(PW_KEY); } catch { /* ignoré */ }
   renderLogin();
 }
@@ -181,7 +183,37 @@ function thumb(ref, alt, cls) {
   return box;
 }
 
+/* ---------- modifier / ajouter un carnet ---------- */
+function openEditor(p, isNew = false) {
+  editing = { person: p, isNew };
+  view = 'edit';
+  render();
+  window.scrollTo(0, 0);
+}
+async function closeEditor(changed) {
+  const { person, isNew } = editing || {};
+  view = 'recap';
+  editing = null;
+  // Un carnet ajouté puis abandonné sans enregistrer est retiré.
+  if (isNew && !changed) await api(`/api/admin/responses?id=${encodeURIComponent(person.id)}`, { method: 'DELETE' }).catch(() => {});
+  lastPayload = ''; // force le rafraîchissement
+  await load();
+}
+async function createPerson(btn) {
+  btn.disabled = true;
+  try {
+    const p = await api('/api/admin/responses', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prenom: 'Nouvel ami' }),
+    });
+    openEditor(p, true);
+  } catch (e) { toast(e.message); btn.disabled = false; }
+}
+
 function render() {
+  if (view === 'edit' && editing) {
+    renderEditor({ root: root(), person: editing.person, api, confirmBox, onClose: closeEditor });
+    return;
+  }
   if (view === 'carousel') {
     renderCarousel({ root: root(), people, imageBlob, saveFile, withBusy, onBack: () => { view = 'recap'; render(); } });
     return;
@@ -198,6 +230,7 @@ function render() {
         el('button', { type: 'button', class: 'btn sm', disabled: !has || null, onclick: () => copyText(people.map(personText).join('\n\n')) }, 'Copier tous les textes'),
         el('button', { type: 'button', class: 'btn sm', disabled: !has || null, onclick: () => saveFile('fhummmmmmmm.csv', new Blob([csv()], { type: 'text/csv;charset=utf-8' })) }, 'Exporter en CSV'),
         el('button', { type: 'button', class: 'btn sm primary', disabled: !has || null, onclick: (e) => zipAll(e.currentTarget) }, 'Tout télécharger (ZIP)'),
+        el('button', { type: 'button', class: 'btn sm', onclick: (e) => createPerson(e.currentTarget) }, 'Ajouter un ami'),
         el('button', { type: 'button', class: 'btn sm primary', disabled: !has || null, onclick: () => { view = 'carousel'; render(); } }, 'Créer le carrousel'),
         el('button', { type: 'button', class: 'link-btn', onclick: logout }, 'Se déconnecter'))),
     note ? el('div', { class: 'notice', text: note }) : null,
@@ -234,6 +267,7 @@ function personCard(p) {
         el('button', { type: 'button', class: 'btn sm', onclick: () => copyText(personText(p)) }, 'Copier ses réponses'),
         p.photo ? el('button', { type: 'button', class: 'btn sm', onclick: (e) => downloadOne(p, 0, e.currentTarget) }, 'Sa photo') : null,
         el('button', { type: 'button', class: 'btn sm', onclick: (e) => zipPerson(p, e.currentTarget) }, 'Ses images (ZIP)'),
+        el('button', { type: 'button', class: 'btn sm', onclick: () => openEditor(p) }, 'Modifier'),
         el('button', { type: 'button', class: 'btn sm danger', onclick: () => removePerson(p) }, 'Supprimer'))),
     grid);
 }

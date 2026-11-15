@@ -3,7 +3,7 @@
 Petit site pour recueillir les goûts de tes amis. Chacun remplit son carnet en 10 étapes : prénom et photo, puis repas, couleur, crush célébrité, série, boisson, voiture, hobby, artiste homme et artiste femme préférés, chaque fois avec un nom et une image. Toi, tu retrouves tout sur une page récap protégée par mot de passe.
 
 - **`/`** : le carnet, pour les amis. Aucun compte n'est nécessaire.
-- **`/admin`** : le récap, pour toi seul. On peut y copier les textes, exporter en CSV, télécharger les images une par une ou en ZIP, et supprimer un carnet. Le bouton **Créer le carrousel** compose des slides prêtes à publier (une par catégorie : photo de chaque ami à gauche, sa réponse à droite, le titre au centre) et les télécharge en JPG ou en ZIP.
+- **`/admin`** : le récap, pour toi seul. On peut y copier les textes, exporter en CSV, télécharger les images une par une ou en ZIP, modifier un carnet (prénom, réponses, images), ajouter soi-même le carnet d'un ami, et supprimer un carnet. Le bouton **Créer le carrousel** compose des slides prêtes à publier (une par catégorie : photo de chaque ami à gauche, sa réponse à droite, le titre au centre) et les télécharge en JPG ou en ZIP.
 
 ## Comment ça marche
 

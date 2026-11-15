@@ -183,3 +183,4 @@ select.text{appearance:auto}
 .cr-tools input[type=range]{flex:1;accent-color:var(--accent)}
 .cr-tip{text-align:center}
 .cr-opt span:last-child{white-space:normal;overflow:visible}
+.cr-lbl{min-width:84px}

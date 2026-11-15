@@ -1,6 +1,7 @@
 // Éditeur de carrousel (admin) : une slide par catégorie, une ligne par ami
 // (sa photo à gauche, sa réponse à droite), le titre au centre. Export JPG / ZIP.
 import { CATS, el, toast, slug, imgUrl, refOf, nameOf } from './shared.js';
+import { drawTitleSlide, COVER_FONTS } from './cover.js';
 
 const MAX_ROWS = 8;
 const FORMATS = {
@@ -11,6 +12,7 @@ const FORMATS = {
 
 // Titres par défaut des slides (en anglais, comme les carrousels d'origine). Modifiables dans l'éditeur.
 const EN_TITLES = {
+  cover: 'A trend of 7 friends',
   repas: 'Favorite food',
   couleur: 'Favorite color',
   crush: 'Celebrity crush',
@@ -26,13 +28,16 @@ const EN_TITLES = {
 const state = {
   selected: null, // ids des amis, dans l'ordre d'affichage
   cats: new Set(CATS.map((c) => c.key)),
-  titles: Object.fromEntries(CATS.map((c) => [c.key, EN_TITLES[c.key] || c.label])),
+  titles: Object.fromEntries([{ key: 'cover', label: 'Couverture' }, ...CATS].map((c) => [c.key, EN_TITLES[c.key] || c.label])),
+  cover: true, // slide de couverture en premier
+  coverSeed: 1, // disposition des polaroids (bouton « Mélanger »)
   format: 'portrait',
   showNames: false, // prénom sur la photo de chaque ami
   showAnswers: false, // réponse sur l'image de droite
   colorFill: true,
   current: 0,
-  edit: null, // URL de l'image en cours de recadrage
+  edit: null, // case en cours d'édition : URL de l'image, ou « cover:<id> » pour un polaroid
+  coverMode: 'move', // sur la couverture, glisser déplace le polaroid ('move') ou cadre la photo ('photo')
 };
 
 // Recadrages par image : { fx, fy } = position (0 à 1), zoom ≥ 1, rot en quarts de tour. Gardés dans le navigateur.
@@ -44,6 +49,20 @@ function saveCrops() {
   clearTimeout(cropSaveTimer);
   cropSaveTimer = setTimeout(() => { try { localStorage.setItem(CROP_KEY, JSON.stringify(crops)); } catch { /* ignoré */ } }, 400);
 }
+// Couverture : disposition (seed) et réglages par polaroid { dx, dy, scale, da, z }, gardés dans le navigateur.
+const COVER_KEY = 'fhummmmmmmm.cover';
+let coverAdj = {};
+try {
+  const saved = JSON.parse(localStorage.getItem(COVER_KEY));
+  if (saved) { coverAdj = saved.adj || {}; state.coverSeed = saved.seed || 1; }
+} catch { /* ignoré */ }
+let coverSaveTimer = null;
+function saveCover() {
+  clearTimeout(coverSaveTimer);
+  coverSaveTimer = setTimeout(() => { try { localStorage.setItem(COVER_KEY, JSON.stringify({ seed: state.coverSeed, adj: coverAdj })); } catch { /* ignoré */ } }, 400);
+}
+const adjOf = (id) => coverAdj[id] || { dx: 0, dy: 0, scale: 1, da: 0, z: 0 };
+
 const cropOf = (url, defFy = 0.5) => crops[url] || { fx: 0.5, fy: defFy, zoom: 1, rot: 0 };
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 
@@ -186,7 +205,28 @@ function title(g, text, W, H) {
   g.restore();
 }
 
+const COVER = { key: 'cover', label: 'Couverture' };
+
+async function drawCoverSlide(list, canvas) {
+  const { w: W, h: H } = FORMATS[state.format];
+  const imgs = await Promise.all(list.map((p) => bitmap(p.photo)));
+  const people = list.map((p, i) => {
+    const url = imgUrl(p.photo);
+    const crop = cropOf(url, 0.3);
+    return { id: p.id, name: p.prenom, img: imgs[i] ? rotated(url, imgs[i], crop.rot) : null, crop, adj: coverAdj[p.id] || null, url };
+  });
+  drawTitleSlide(canvas, { W, H, title: state.titles.cover, seed: state.coverSeed, people });
+  const byPid = new Map(people.map((p) => [p.id, p]));
+  // Polaroids éditables, du dessus vers le dessous (pour cliquer sur celui qui est devant).
+  canvas.cells = canvas.coverCards.map((c) => {
+    const p = byPid.get(c.id);
+    return { ...c, key: `cover:${c.id}`, cover: true, url: p.url, defFy: 0.3, img: p.img, label: `Polaroid de ${p.name || 'cet ami'}` };
+  }).reverse();
+  return canvas;
+}
+
 async function drawSlide(cat, list, canvas = document.createElement('canvas')) {
+  if (cat.key === 'cover') return drawCoverSlide(list, canvas);
   const { w: W, h: H } = FORMATS[state.format];
   canvas.width = W; canvas.height = H;
   canvas.cells = []; // cases recadrables, pour l'aperçu
@@ -196,7 +236,7 @@ async function drawSlide(cat, list, canvas = document.createElement('canvas')) {
     const crop = cropOf(url, defFy);
     const img = rotated(url, raw, crop.rot);
     drawCover(g, img, x, y, w, h, crop);
-    canvas.cells.push({ url, defFy, img, x, y, w, h, label });
+    canvas.cells.push({ key: url, url, defFy, img, x, y, w, h, label });
   };
   g.fillStyle = '#0b0d12';
   g.fillRect(0, 0, W, H);
@@ -237,7 +277,7 @@ async function drawSlide(cat, list, canvas = document.createElement('canvas')) {
 /* ---------- données ---------- */
 const byId = () => new Map(ctx.people.map((p) => [p.id, p]));
 const chosen = () => { const m = byId(); return state.selected.map((id) => m.get(id)).filter(Boolean); };
-const activeCats = () => CATS.filter((c) => state.cats.has(c.key));
+const activeCats = () => [...(state.cover ? [COVER] : []), ...CATS.filter((c) => state.cats.has(c.key))];
 
 function syncSelection() {
   const ids = new Set(ctx.people.map((p) => p.id));
@@ -267,7 +307,7 @@ async function renderSlides() {
     return;
   }
   if (!slides.length) stage.replaceChildren(el('div', { class: 'center' }, el('div', { class: 'spinner', 'aria-label': 'Création des slides' })));
-  await document.fonts.load('700 80px "DM Sans"').catch(() => {});
+  await Promise.all(['700 80px "DM Sans"', ...COVER_FONTS].map((f) => document.fonts.load(f).catch(() => {})));
   const out = [];
   for (const c of cats) {
     const canvas = await drawSlide(c, list);
@@ -287,7 +327,25 @@ function paintThumb(sl) {
 }
 
 /* ---------- recadrage dans l'aperçu ---------- */
-const editCell = () => slides[state.current]?.canvas.cells.find((c) => c.url === state.edit) || null;
+const editCell = () => slides[state.current]?.canvas.cells.find((c) => c.key === state.edit) || null;
+
+function hitTest(c, pt) {
+  if (!c.cover) return pt.x >= c.x && pt.x < c.x + c.w && pt.y >= c.y && pt.y < c.y + c.h;
+  const dx = pt.x - c.x, dy = pt.y - c.y;
+  const lx = Math.cos(c.a) * dx + Math.sin(c.a) * dy;
+  const ly = -Math.sin(c.a) * dx + Math.cos(c.a) * dy;
+  return Math.abs(lx) <= c.w / 2 && Math.abs(ly) <= c.h / 2;
+}
+
+function updateAdj(change) {
+  const c = editCell();
+  if (!c || !c.cover) return;
+  const cur = adjOf(c.id);
+  coverAdj[c.id] = { ...cur, ...change(cur) };
+  saveCover();
+  redrawCurrent();
+  syncToolbar();
+}
 
 function placeOverlay() {
   const box = document.getElementById('cr-sel');
@@ -297,7 +355,8 @@ function placeOverlay() {
   box.hidden = !c;
   if (!c) return;
   const W = s.canvas.width, H = s.canvas.height;
-  Object.assign(box.style, { left: `${(c.x / W) * 100}%`, top: `${(c.y / H) * 100}%`, width: `${(c.w / W) * 100}%`, height: `${(c.h / H) * 100}%` });
+  Object.assign(box.style, { left: `${(c.x / W) * 100}%`, top: `${(c.y / H) * 100}%`, width: `${(c.w / W) * 100}%`, height: `${(c.h / H) * 100}%`,
+    transform: c.cover ? `translate(-50%, -50%) rotate(${c.a}rad)` : '' });
 }
 
 // Redessine tout de suite la slide affichée, puis les autres un peu après (la photo d'un ami est sur toutes).
@@ -317,7 +376,7 @@ async function redrawCurrent() {
 
 function updateCrop(change) {
   const c = editCell();
-  if (!c) return;
+  if (!c || !c.url) return; // polaroid sans photo : rien à cadrer
   const cur = cropOf(c.url, c.defFy);
   crops[c.url] = { ...cur, ...change(cur, c) };
   saveCrops();
@@ -326,13 +385,19 @@ function updateCrop(change) {
 }
 
 function syncToolbar() {
-  const z = document.getElementById('cr-zoom');
   const c = editCell();
-  if (z && c) z.value = cropOf(c.url, c.defFy).zoom;
+  if (!c) return;
+  const set = (id, v) => { const n = document.getElementById(id); if (n && document.activeElement !== n) n.value = v; };
+  set('cr-zoom', cropOf(c.url, c.defFy).zoom);
+  if (c.cover) {
+    const a = adjOf(c.id);
+    set('cr-size', a.scale);
+    set('cr-tilt', Math.round((a.da * 180) / Math.PI));
+  }
 }
 
-function selectCell(url) {
-  state.edit = url;
+function selectCell(key) {
+  state.edit = key;
   showStage();
 }
 
@@ -347,9 +412,9 @@ function bindCanvas(canvas) {
   let drag = null;
   canvas.addEventListener('pointerdown', (e) => {
     const pt = toCanvas(canvas, e);
-    const hit = canvas.cells.find((c) => pt.x >= c.x && pt.x < c.x + c.w && pt.y >= c.y && pt.y < c.y + c.h);
+    const hit = canvas.cells.find((c) => hitTest(c, pt));
     if (!hit) { if (state.edit) selectCell(null); return; }
-    if (hit.url !== state.edit) selectCell(hit.url);
+    if (hit.key !== state.edit) selectCell(hit.key);
     drag = { ...pt, id: e.pointerId };
     canvas.setPointerCapture(e.pointerId);
     e.preventDefault();
@@ -359,12 +424,24 @@ function bindCanvas(canvas) {
     const pt = toCanvas(canvas, e);
     const dx = pt.x - drag.x, dy = pt.y - drag.y;
     drag.x = pt.x; drag.y = pt.y;
+    const cell = editCell();
+    if (!cell) return;
+    if (cell.cover && state.coverMode === 'move') {
+      const W = canvas.width, H = canvas.height;
+      updateAdj((cur) => ({ dx: cur.dx + dx / W, dy: cur.dy + dy / H }));
+      return;
+    }
+    if (!cell.img) return;
+    // Sur un polaroid penché, le glissement est ramené dans le repère de la photo.
+    const lx = cell.cover ? Math.cos(cell.a) * dx + Math.sin(cell.a) * dy : dx;
+    const ly = cell.cover ? -Math.sin(cell.a) * dx + Math.cos(cell.a) * dy : dy;
+    const w = cell.cover ? cell.photo : cell.w, h = cell.cover ? cell.photo : cell.h;
     updateCrop((cur, c) => {
-      const { s, sw, sh } = fit(c.img, c.w, c.h, cur);
+      const { s, sw, sh } = fit(c.img, w, h, cur);
       const rx = c.img.width - sw, ry = c.img.height - sh;
       return {
-        fx: rx > 0.5 ? clamp01(cur.fx - dx / s / rx) : cur.fx,
-        fy: ry > 0.5 ? clamp01(cur.fy - dy / s / ry) : cur.fy,
+        fx: rx > 0.5 ? clamp01(cur.fx - lx / s / rx) : cur.fx,
+        fy: ry > 0.5 ? clamp01(cur.fy - ly / s / ry) : cur.fy,
       };
     });
   });
@@ -372,15 +449,44 @@ function bindCanvas(canvas) {
   canvas.addEventListener('pointerup', end);
   canvas.addEventListener('pointercancel', end);
   canvas.addEventListener('wheel', (e) => {
-    if (!editCell()) return;
+    const cell = editCell();
+    if (!cell) return;
     e.preventDefault();
-    updateCrop((cur) => ({ zoom: Math.max(1, Math.min(4, cur.zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08))) }));
+    const f = e.deltaY < 0 ? 1.06 : 1 / 1.06;
+    if (cell.cover && state.coverMode === 'move') updateAdj((cur) => ({ scale: Math.max(0.4, Math.min(2.2, cur.scale * f)) }));
+    else updateCrop((cur) => ({ zoom: Math.max(1, Math.min(4, cur.zoom * f)) }));
   }, { passive: false });
+}
+
+function coverToolbar(c) {
+  const a = adjOf(c.id);
+  const crop = cropOf(c.url, c.defFy);
+  const mode = (m, label) => el('button', { type: 'button', class: 'btn sm' + (state.coverMode === m ? ' primary' : ''), 'aria-pressed': state.coverMode === m ? 'true' : 'false',
+    onclick: () => { state.coverMode = m; showStage(); } }, label);
+  const slider = (id, label, attrs, oninput) => el('div', { class: 'row' },
+    el('label', { for: id, class: 'cr-hint cr-lbl', text: label }),
+    el('input', { type: 'range', id, ...attrs, oninput: (e) => oninput(Number(e.target.value)) }));
+  const maxZ = () => Math.max(0, ...Object.values(coverAdj).map((x) => x.z || 0));
+  return el('div', { class: 'cr-tools' },
+    el('p', { class: 'cr-tools-title' }, el('strong', { text: 'Modifier : ' }), c.label),
+    el('div', { class: 'row' }, el('span', { class: 'cr-hint', text: 'Glisser pour :' }), mode('move', 'Déplacer le polaroid'), mode('photo', 'Cadrer la photo')),
+    slider('cr-size', 'Taille', { min: 0.4, max: 2.2, step: 0.01, value: a.scale }, (v) => updateAdj(() => ({ scale: v }))),
+    slider('cr-tilt', 'Inclinaison', { min: -45, max: 45, step: 1, value: Math.round((a.da * 180) / Math.PI) }, (v) => updateAdj(() => ({ da: (v * Math.PI) / 180 }))),
+    slider('cr-zoom', 'Zoom photo', { min: 1, max: 4, step: 0.01, value: crop.zoom }, (v) => updateCrop(() => ({ zoom: v }))),
+    el('div', { class: 'row' },
+      el('button', { type: 'button', class: 'btn sm', onclick: () => updateAdj(() => ({ z: maxZ() + 1 })) }, 'Mettre devant'),
+      el('button', { type: 'button', class: 'btn sm', onclick: () => updateCrop((cur) => ({ rot: (cur.rot + 1) % 4 })) }, '↻ Pivoter la photo'),
+      el('button', { type: 'button', class: 'btn sm', onclick: () => { delete coverAdj[c.id]; saveCover(); redrawCurrent(); syncToolbar(); } }, 'Réinitialiser'),
+      el('button', { type: 'button', class: 'btn sm primary', onclick: () => selectCell(null) }, 'Terminé')),
+    el('p', { class: 'cr-hint', text: 'La molette agrandit le polaroid (ou zoome la photo en mode « Cadrer la photo »). Le cadrage et la rotation de la photo valent aussi pour les autres slides.' }));
 }
 
 function toolbar() {
   const c = editCell();
-  if (!c) return el('p', { class: 'cr-hint cr-tip', text: 'Astuce : clique sur une image de l’aperçu pour la recadrer.' });
+  if (!c) return el('p', { class: 'cr-hint cr-tip', text: slides[state.current]?.key === 'cover'
+    ? 'Astuce : clique sur un polaroid pour le déplacer, l’agrandir ou le pencher.'
+    : 'Astuce : clique sur une image de l’aperçu pour la recadrer.' });
+  if (c.cover) return coverToolbar(c);
   const crop = cropOf(c.url, c.defFy);
   return el('div', { class: 'cr-tools' },
     el('p', { class: 'cr-tools-title' }, el('strong', { text: 'Recadrer : ' }), c.label),
@@ -480,6 +586,17 @@ function peoplePanel() {
 }
 
 function slidesPanel() {
+  const coverRow = el('div', { class: 'cr-row cr-cat' },
+    el('input', { type: 'checkbox', 'aria-label': 'Inclure la couverture', checked: state.cover || null,
+      onchange: (e) => { state.cover = e.target.checked; scheduleRender(); } }),
+    el('input', { class: 'text cr-title', value: state.titles.cover, 'aria-label': 'Titre de la couverture', maxlength: 60,
+      oninput: (e) => { state.titles.cover = e.target.value; scheduleRender(300); } }),
+    el('button', { type: 'button', class: 'btn sm', title: 'Changer la disposition des photos', 'aria-label': 'Mélanger les photos de la couverture',
+      onclick: () => {
+        const had = Object.keys(coverAdj).length > 0;
+        state.coverSeed += 1; state.current = 0; coverAdj = {}; state.edit = null; saveCover(); scheduleRender();
+        if (had) toast('Nouvelle disposition : les réglages des polaroids sont remis à zéro.');
+      } }, '🎲'));
   const rows = CATS.map((c) => el('div', { class: 'cr-row cr-cat' },
     el('input', { type: 'checkbox', 'aria-label': `Inclure ${c.label}`, checked: state.cats.has(c.key) || null,
       onchange: (e) => { if (e.target.checked) state.cats.add(c.key); else state.cats.delete(c.key); scheduleRender(); } }),
@@ -488,6 +605,9 @@ function slidesPanel() {
   return el('section', { class: 'cr-panel' },
     el('h2', { text: 'Slides' }),
     el('p', { class: 'cr-hint', text: 'Coche les slides à garder et modifie le titre affiché au centre.' }),
+    el('p', { class: 'cr-hint', text: 'Couverture (style scrapbook), 🎲 pour mélanger les photos :' }),
+    coverRow,
+    el('p', { class: 'cr-hint', text: 'Puis une slide par catégorie :' }),
     el('div', { class: 'cr-list' }, rows));
 }
 
